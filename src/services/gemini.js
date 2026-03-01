@@ -1,9 +1,10 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { CSV_TOOL_DECLARATIONS } from './csvTools';
+import { CHANNEL_TOOL_DECLARATIONS } from './channelTools';
 
 const genAI = new GoogleGenerativeAI(process.env.REACT_APP_GEMINI_API_KEY || '');
 
-const MODEL = 'gemini-2.0-flash';
+const MODEL = 'gemini-2.5-flash';
 
 const SEARCH_TOOL = { googleSearch: {} };
 const CODE_EXEC_TOOL = { codeExecution: {} };
@@ -33,8 +34,41 @@ async function loadSystemPrompt() {
 // useCodeExecution: pass true to use codeExecution tool (CSV/analysis),
 //                   false (default) to use googleSearch tool.
 // Note: Gemini does not support both tools simultaneously.
-export const streamChat = async function* (history, newMessage, imageParts = [], useCodeExecution = false) {
-  const systemInstruction = await loadSystemPrompt();
+// userContext: { firstName, lastName } optional; usernameFallback: use when no first/last so AI always has a name.
+function buildUserNameInstruction(userContext, usernameFallback = null) {
+  const first = (userContext?.firstName || '').trim();
+  const last = (userContext?.lastName || '').trim();
+  const hasRealName = !!(first || last);
+
+  if (hasRealName) {
+    const full = [first, last].filter(Boolean).join(' ');
+    const lines = [
+      '--- USER REAL NAME (use this when addressing them; never use their username) ---',
+      first ? `First name: ${first}` : null,
+      last ? `Last name: ${last}` : null,
+      full ? `Full name: ${full}` : null,
+      'Rule: In your first message, you MUST greet them by name (e.g. "Hi ' + (first || full) + '!"). When they ask "what is my name" or "my real name", tell them their first and last name as above. Never address them by username.',
+    ].filter(Boolean);
+    return '\n\n' + lines.join('\n');
+  }
+
+  if (usernameFallback && String(usernameFallback).trim()) {
+    return `\n\nThe user you are chatting with is ${String(usernameFallback).trim()}. In your first message you MUST greet them by name (e.g. "Hi ${String(usernameFallback).trim()}!"). Address them by this name when speaking to them.`;
+  }
+
+  return '';
+}
+
+export const streamChat = async function* (
+  history,
+  newMessage,
+  imageParts = [],
+  useCodeExecution = false,
+  userContext = null,
+  usernameFallback = null
+) {
+  let systemInstruction = await loadSystemPrompt();
+  systemInstruction += buildUserNameInstruction(userContext, usernameFallback);
   const tools = useCodeExecution ? [CODE_EXEC_TOOL] : [SEARCH_TOOL];
   const model = genAI.getGenerativeModel({
     model: MODEL,
@@ -127,9 +161,18 @@ export const streamChat = async function* (history, newMessage, imageParts = [],
 //
 // executeFn(toolName, args) → plain JS object with the result
 // Returns the final text response from the model.
+// userContext: { firstName, lastName } — both optional.
 
-export const chatWithCsvTools = async (history, newMessage, csvHeaders, executeFn) => {
-  const systemInstruction = await loadSystemPrompt();
+export const chatWithCsvTools = async (
+  history,
+  newMessage,
+  csvHeaders,
+  executeFn,
+  userContext = null,
+  usernameFallback = null
+) => {
+  let systemInstruction = await loadSystemPrompt();
+  systemInstruction += buildUserNameInstruction(userContext, usernameFallback);
   const model = genAI.getGenerativeModel({
     model: MODEL,
     tools: [{ functionDeclarations: CSV_TOOL_DECLARATIONS }],
@@ -191,4 +234,67 @@ export const chatWithCsvTools = async (history, newMessage, csvHeaders, executeF
   }
 
   return { text: response.text(), charts, toolCalls };
+};
+
+// ── Function-calling chat for YouTube channel JSON tools ─────────────────────
+// executeFn(toolName, args) → Promise<plain JS object>
+export const chatWithChannelTools = async (
+  history,
+  newMessage,
+  channelDataContext,
+  executeFn,
+  userContext = null,
+  usernameFallback = null
+) => {
+  let systemInstruction = await loadSystemPrompt();
+  systemInstruction += buildUserNameInstruction(userContext, usernameFallback);
+  const model = genAI.getGenerativeModel({
+    model: MODEL,
+    tools: [{ functionDeclarations: CHANNEL_TOOL_DECLARATIONS }],
+  });
+
+  const baseHistory = history.map((m) => ({
+    role: m.role === 'user' ? 'user' : 'model',
+    parts: [{ text: m.content || '' }],
+  }));
+
+  const chatHistory = systemInstruction
+    ? [
+        {
+          role: 'user',
+          parts: [{ text: `Follow these instructions in every response:\n\n${systemInstruction}` }],
+        },
+        { role: 'model', parts: [{ text: "Got it! I'll follow those instructions." }] },
+        ...baseHistory,
+      ]
+    : baseHistory;
+
+  const chat = model.startChat({ history: chatHistory });
+  const msgWithContext = channelDataContext ? `${channelDataContext}\n\n${newMessage}` : newMessage;
+
+  let response = (await chat.sendMessage(msgWithContext)).response;
+  const charts = [];
+  const toolCalls = [];
+  const generatedImages = [];
+
+  for (let round = 0; round < 8; round++) {
+    const parts = response.candidates?.[0]?.content?.parts || [];
+    const funcCall = parts.find((p) => p.functionCall);
+    if (!funcCall) break;
+
+    const { name, args } = funcCall.functionCall;
+    const toolResult = await executeFn(name, args);
+    toolCalls.push({ name, args, result: toolResult });
+
+    if (toolResult?._chartType) charts.push(toolResult);
+    if (toolResult?._imageResult) generatedImages.push(toolResult._imageResult);
+
+    response = (
+      await chat.sendMessage([
+        { functionResponse: { name, response: { result: toolResult } } },
+      ])
+    ).response;
+  }
+
+  return { text: response.text(), charts, toolCalls, generatedImages };
 };

@@ -19,6 +19,17 @@ async function connect() {
   console.log('MongoDB connected');
 }
 
+// Return 503 for /api when DB is not connected (so proxy gets a response instead of ECONNREFUSED)
+app.use('/api', (req, res, next) => {
+  if (req.path.startsWith('/youtube')) return next(); // YouTube endpoint does not need DB
+  if (!db) {
+    return res.status(503).json({
+      error: 'Database unavailable. Check MongoDB connection and REACT_APP_MONGODB_URI in .env.',
+    });
+  }
+  next();
+});
+
 app.get('/', (req, res) => {
   res.send(`
     <html>
@@ -47,7 +58,7 @@ app.get('/api/status', async (req, res) => {
 
 app.post('/api/users', async (req, res) => {
   try {
-    const { username, password, email } = req.body;
+    const { username, password, email, firstName, lastName } = req.body;
     if (!username || !password)
       return res.status(400).json({ error: 'Username and password required' });
     const name = String(username).trim().toLowerCase();
@@ -58,6 +69,8 @@ app.post('/api/users', async (req, res) => {
       username: name,
       password: hashed,
       email: email ? String(email).trim().toLowerCase() : null,
+      firstName: firstName ? String(firstName).trim() : null,
+      lastName: lastName ? String(lastName).trim() : null,
       createdAt: new Date().toISOString(),
     });
     res.json({ ok: true });
@@ -76,9 +89,98 @@ app.post('/api/users/login', async (req, res) => {
     if (!user) return res.status(401).json({ error: 'User not found' });
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(401).json({ error: 'Invalid password' });
-    res.json({ ok: true, username: name });
+    res.json({
+      ok: true,
+      username: name,
+      firstName: user.firstName || null,
+      lastName: user.lastName || null,
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/users/profile', async (req, res) => {
+  try {
+    const { username } = req.query;
+    if (!username) return res.status(400).json({ error: 'username required' });
+    const name = String(username).trim().toLowerCase();
+    const user = await db.collection('users').findOne(
+      { username: name },
+      { projection: { firstName: 1, lastName: 1 } }
+    );
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    res.json({
+      firstName: user.firstName || null,
+      lastName: user.lastName || null,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── YouTube Channel Data ─────────────────────────────────────────────────────
+const YOUTUBE_API_KEY = process.env.YOUTUBE_API_KEY || process.env.REACT_APP_YOUTUBE_API_KEY;
+const { fetchChannelData } = require('./youtubeService');
+
+app.post('/api/youtube/channel-data', async (req, res) => {
+  if (!YOUTUBE_API_KEY) {
+    return res.status(500).json({ error: 'YOUTUBE_API_KEY (or REACT_APP_YOUTUBE_API_KEY) not set in .env' });
+  }
+  res.setHeader('Content-Type', 'application/x-ndjson');
+  res.setHeader('Transfer-Encoding', 'chunked');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  const send = (obj) => res.write(JSON.stringify(obj) + '\n');
+
+  try {
+    const { channelUrl, maxVideos: rawMax } = req.body;
+    const maxVideos = Math.min(100, Math.max(1, parseInt(rawMax, 10) || 10));
+    const data = await fetchChannelData(YOUTUBE_API_KEY, channelUrl, maxVideos, (current, total, message) => {
+      send({ type: 'progress', current, total, message });
+    });
+    send({ type: 'done', data });
+  } catch (err) {
+    send({ type: 'error', error: err.message || String(err) });
+  } finally {
+    res.end();
+  }
+});
+
+// ── Image generation (for chat tool generateImage) ──────────────────────────
+const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+app.post('/api/imagen/generate', async (req, res) => {
+  try {
+    const { prompt, anchorImageBase64 } = req.body;
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'prompt required' });
+    }
+    // Try Imagen via Google AI if available; otherwise return placeholder
+    if (GEMINI_API_KEY) {
+      try {
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              instances: [{ prompt: prompt.slice(0, 1000) }],
+              parameters: { sampleCount: 1 },
+            }),
+          }
+        );
+        if (response.ok) {
+          const data = await response.json();
+          const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
+          if (b64) return res.json({ imageBase64: b64 });
+        }
+      } catch (_) {}
+    }
+    // Placeholder: minimal PNG (1x1 transparent) so UI can display something
+    const placeholder = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    return res.json({ imageBase64: placeholder });
+  } catch (err) {
+    res.status(500).json({ error: err.message || 'Image generation failed' });
   }
 });
 
@@ -151,7 +253,7 @@ app.patch('/api/sessions/:id/title', async (req, res) => {
 
 app.post('/api/messages', async (req, res) => {
   try {
-    const { session_id, role, content, imageData, charts, toolCalls } = req.body;
+    const { session_id, role, content, imageData, charts, toolCalls, generatedImages } = req.body;
     if (!session_id || !role || content === undefined)
       return res.status(400).json({ error: 'session_id, role, content required' });
     const msg = {
@@ -163,6 +265,7 @@ app.post('/api/messages', async (req, res) => {
       }),
       ...(charts?.length && { charts }),
       ...(toolCalls?.length && { toolCalls }),
+      ...(generatedImages?.length && { generatedImages }),
     };
     await db.collection('sessions').updateOne(
       { _id: new ObjectId(session_id) },
@@ -198,6 +301,7 @@ app.get('/api/messages', async (req, res) => {
           : undefined,
         charts: m.charts?.length ? m.charts : undefined,
         toolCalls: m.toolCalls?.length ? m.toolCalls : undefined,
+        generatedImages: m.generatedImages?.length ? m.generatedImages : undefined,
       };
     });
     res.json(msgs);
@@ -210,11 +314,15 @@ app.get('/api/messages', async (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 
-connect()
-  .then(() => {
-    app.listen(PORT, () => console.log(`Server on http://localhost:${PORT}`));
-  })
-  .catch((err) => {
+// Always listen so the dev proxy never gets ECONNREFUSED; connect to MongoDB in background
+app.listen(PORT, () => {
+  console.log(`Server on http://localhost:${PORT}`);
+  if (!URI) {
+    console.error('Missing REACT_APP_MONGODB_URI in .env — API will return 503 until set.');
+    return;
+  }
+  connect().catch((err) => {
     console.error('MongoDB connection failed:', err.message);
-    process.exit(1);
+    console.error('Server is running but API will return 503 until MongoDB is connected.');
   });
+});

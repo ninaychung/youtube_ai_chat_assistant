@@ -1,0 +1,116 @@
+.metric-vs-time-wrap {
+  margin: 1rem 0;
+  padding: 1rem;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.metric-vs-time-wrap:hover {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.metric-vs-time-chart {
+  pointer-events: none;
+}
+
+.metric-vs-time-wrap .metric-vs-time-actions {
+  pointer-events: auto;
+}
+
+.metric-vs-time-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.metric-vs-time-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.metric-vs-time-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.metric-vs-time-dl,
+.metric-vs-time-enlarge {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.75rem;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+
+.metric-vs-time-dl:hover,
+.metric-vs-time-enlarge:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.metric-vs-time-lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 2rem;
+}
+
+.metric-vs-time-lightbox-inner {
+  background: rgba(20, 20, 40, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 1.5rem;
+  max-width: 90vw;
+  max-height: 90vh;
+  overflow: auto;
+  position: relative;
+}
+
+.metric-vs-time-lightbox-close {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 1.5rem;
+  line-height: 1;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.metric-vs-time-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.metric-vs-time-lightbox-actions {
+  margin-bottom: 0.75rem;
+}
+
+.metric-vs-time-lightbox-actions button {
+  padding: 0.5rem 1rem;
+  background: rgba(99, 102, 241, 0.6);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  border-radius: 8px;
+  color: #fff;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.metric-vs-time-lightbox-chart {
+  min-width: 400px;
+  height: 400px;
+}

@@ -17,6 +17,7 @@ Create a `.env` file in the project root with:
 |----------|----------|------------|-------------|
 | `REACT_APP_GEMINI_API_KEY` | Yes | Frontend (baked in at build) | Google Gemini API key. Get one at [Google AI Studio](https://aistudio.google.com/apikey). |
 | `REACT_APP_MONGODB_URI` | Yes | Backend | MongoDB Atlas connection string. Format: `mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/` |
+| `YOUTUBE_API_KEY` | For YouTube tab | Backend | YouTube Data API v3 key. Enable the API at [Google Cloud Console](https://console.cloud.google.com/apis/library/youtube.googleapis.com). Required for the "YouTube Channel Download" tab. |
 | `REACT_APP_API_URL` | Production only | Frontend (baked in at build) | Full URL of the backend, e.g. `https://your-backend.onrender.com`. Leave blank for local dev (proxy handles it). |
 
 The backend also accepts `MONGODB_URI` or `REACT_APP_MONGO_URI` as the MongoDB connection string if you prefer those names.
@@ -27,6 +28,7 @@ The backend also accepts `MONGODB_URI` or `REACT_APP_MONGO_URI` as the MongoDB c
 REACT_APP_GEMINI_API_KEY=AIzaSy...
 REACT_APP_MONGODB_URI=mongodb+srv://user:password@cluster.mongodb.net/
 # REACT_APP_API_URL not needed locally — the dev server proxies /api to localhost:3001
+# YOUTUBE_API_KEY=your_youtube_data_api_v3_key   # optional; for YouTube Channel Download tab
 ```
 
 ## MongoDB Setup
@@ -49,6 +51,8 @@ One document per registered user.
 | `username` | string | Lowercase username |
 | `password` | string | bcrypt hash |
 | `email` | string | Email address (optional) |
+| `firstName` | string | User's first name (from Create Account) |
+| `lastName` | string | User's last name (from Create Account) |
 | `createdAt` | string | ISO timestamp |
 
 #### Collection: `sessions`
@@ -170,7 +174,13 @@ This starts:
 - **Backend** – http://localhost:3001  
 - **Frontend** – http://localhost:3000  
 
-Use the app at **http://localhost:3000**. The React dev server proxies `/api` requests to the backend.
+Use the app at **http://localhost:3000**. The React dev server proxies `/api` requests to the backend. After logging in, use the **Chat** and **YouTube Channel Download** tabs.
+
+### YouTube Channel Download tab
+
+- Enter a YouTube channel URL (e.g. `https://www.youtube.com/@veritasium`), set max videos (1–100, default 10), and click **Download Channel Data**.
+- The app fetches metadata (title, description, transcript when available, duration, release date, view/like/comment counts, video URL) and lets you download the result as JSON.
+- A sample file `public/veritasium_channel_data.json` is included. To regenerate it with real data for 10 Veritasium videos, set `YOUTUBE_API_KEY` in `.env` and run: `npm run fetch-veritasium`.
 
 ### Verify Backend
 

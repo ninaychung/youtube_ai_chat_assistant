@@ -1,0 +1,26 @@
+[
+  {
+    "videoId": "sample1",
+    "videoUrl": "https://www.youtube.com/watch?v=sample1",
+    "title": "Sample video 1 (run npm run fetch-veritasium with YOUTUBE_API_KEY for real data)",
+    "description": null,
+    "duration": "10:00",
+    "releaseDate": "2024-01-01T00:00:00.000Z",
+    "viewCount": 1000,
+    "likeCount": 100,
+    "commentCount": 10,
+    "transcript": null
+  },
+  {
+    "videoId": "sample2",
+    "videoUrl": "https://www.youtube.com/watch?v=sample2",
+    "title": "Sample video 2",
+    "description": null,
+    "duration": "15:30",
+    "releaseDate": "2024-01-02T00:00:00.000Z",
+    "viewCount": 2000,
+    "likeCount": 200,
+    "commentCount": 20,
+    "transcript": null
+  }
+]

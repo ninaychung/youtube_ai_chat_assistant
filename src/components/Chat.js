@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { streamChat, chatWithCsvTools, chatWithChannelTools, CODE_KEYWORDS } from '../services/gemini';
 import { parseCsvToRows, executeTool, computeDatasetSummary, enrichWithEngagement, buildSlimCsv } from '../services/csvTools';
-import { executeChannelTool, normalizeChannelData } from '../services/channelTools';
+import { executeChannelTool, normalizeChannelData, slimChannelForPrompt } from '../services/channelTools';
 import {
   getSessions,
   createSession,
@@ -388,15 +388,15 @@ export default function Chat({ username, firstName, lastName, onLogout }) {
     const hasCsvInSession = !!sessionCsvRows || !!capturedCsv;
     // Base64 is only worth sending when Gemini will actually run Python
     const needsBase64 = !!capturedCsv && wantPythonOnly;
-    // Channel JSON path: use channel tools (generateImage, plot_metric_vs_time, play_video, compute_stats_json)
+    // Channel tools path: generateImage (always), plus plot/play/stats when channel JSON is loaded
     const hasChannelJson = sessionChannelJson && sessionChannelJson.length > 0;
-    const useChannelTools = !!hasChannelJson;
+    const useChannelTools = hasChannelJson || (!hasCsvInSession && !capturedCsv);
 
     // Mode selection:
-    //   useChannelTools — channel JSON loaded → YouTube tools
+    //   useChannelTools — channel JSON loaded OR no CSV → generateImage + (YouTube tools if JSON)
     //   useTools        — CSV loaded + no Python needed → client-side JS tools
     //   useCodeExecution — Python explicitly needed
-    //   else            — Google Search streaming
+    //   else            — Google Search streaming (only when CSV path and code execution)
     const useTools = !useChannelTools && !!sessionCsvRows && !wantPythonOnly && !wantCode && !capturedCsv;
     const useCodeExecution = !useChannelTools && (wantPythonOnly || wantCode);
 
@@ -410,8 +410,10 @@ export default function Chat({ username, firstName, lastName, onLogout }) {
       : '';
 
     const channelContextBlock = hasChannelJson
-      ? `[YouTube channel JSON loaded: ${sessionChannelJson.length} videos. Fields per video: videoId, videoUrl, title, description, duration, releaseDate, viewCount, likeCount, commentCount, transcript. Use the exact field names in tool calls.]\n\nSample (first 2):\n\`\`\`json\n${JSON.stringify(sessionChannelJson.slice(0, 2), null, 2)}\n\`\`\`\n\n---\n\n`
-      : '';
+      ? `[YouTube channel JSON loaded: ${sessionChannelJson.length} videos. Key fields per video (use these in tool calls): videoId, videoUrl, title, releaseDate, viewCount, likeCount, commentCount, durationSeconds.]\n\nSample (first 2, key metrics only):\n\`\`\`json\n${JSON.stringify(slimChannelForPrompt(sessionChannelJson, 2), null, 2)}\n\`\`\`\n\n---\n\n`
+      : useChannelTools
+        ? '[No channel data loaded. You have the generateImage tool; use it when the user asks to create, generate, or draw an image from a text prompt. The user may attach an image as a reference (anchor).]\n\n---\n\n'
+        : '';
 
     const csvPrefix = capturedCsv
       ? needsBase64
@@ -446,7 +448,12 @@ ${sessionSummary}${slimCsvBlock}
     // userContent  — displayed in bubble and stored in MongoDB (never contains base64)
     // promptForGemini — sent to the Gemini API (may contain the full prefix)
     const userContent = text || (images.length ? '(Image)' : channelJsonContext ? '(JSON attached)' : '(CSV attached)');
-    const promptForGemini = promptPrefix + (text || (images.length ? 'What do you see in this image?' : channelJsonContext ? 'I have loaded YouTube channel data. Help me analyze it.' : 'Please analyze this CSV data.'));
+    const defaultPrompt = images.length
+      ? (useChannelTools && !hasChannelJson ? 'I attached an image. Please use it as a reference to generate an image, or ask what I’d like to generate.' : 'What do you see in this image?')
+      : channelJsonContext
+        ? 'I have loaded YouTube channel data. Help me analyze it.'
+        : 'Please analyze this CSV data.';
+    const promptForGemini = promptPrefix + (text || defaultPrompt);
 
     const userMsg = {
       id: `u-${Date.now()}`,
@@ -492,9 +499,72 @@ ${sessionSummary}${slimCsvBlock}
     let generatedImages = [];
 
     try {
+      // Shortcut: if user clearly asked for "<metric> vs time" and channel JSON is loaded,
+      // call plot_metric_vs_time directly instead of going through Gemini tools.
+      if (useChannelTools && hasChannelJson && text) {
+        const lower = text.toLowerCase();
+        const metricMatch = lower.match(
+          /(views?|likes?|comments?).{0,20}vs\.?\s+time|vs\.?\s+time.{0,20}(views?|likes?|comments?)/
+        );
+        if (metricMatch) {
+          const metricWord = (metricMatch[1] || metricMatch[2] || '').toLowerCase();
+          let metricField = 'viewCount';
+          if (metricWord.startsWith('like')) metricField = 'likeCount';
+          else if (metricWord.startsWith('comment')) metricField = 'commentCount';
+
+          const toolResult = await executeChannelTool(
+            'plot_metric_vs_time',
+            { metricField },
+            sessionChannelJson || [],
+            async () => null
+          );
+
+          if (toolResult.error) {
+            fullContent = `I couldn't create the chart: ${toolResult.error}`;
+          } else {
+            fullContent = `Here's the ${metricField} vs time chart for your channel.`;
+            toolCharts = [toolResult];
+          }
+
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === assistantId
+                ? {
+                    ...msg,
+                    content: fullContent,
+                    charts: toolCharts.length ? toolCharts : undefined,
+                  }
+                : msg
+            )
+          );
+
+          await saveMessage(
+            sessionId,
+            'model',
+            fullContent,
+            null,
+            toolCharts.length ? toolCharts : null,
+            null,
+            null
+          );
+
+          setSessions((prev) =>
+            prev.map((s) =>
+              s.id === sessionId ? { ...s, messageCount: s.messageCount + 2 } : s
+            )
+          );
+
+          setStreaming(false);
+          inputRef.current?.focus();
+          return;
+        }
+      }
+
       if (useChannelTools) {
-        // ── Channel tools: plot_metric_vs_time, play_video, compute_stats_json, generateImage ──
-        const channelDataContext = `YouTube channel JSON loaded: ${sessionChannelJson.length} videos. Fields: videoId, videoUrl, title, releaseDate, viewCount, likeCount, commentCount, durationSeconds, etc.`;
+        // ── Channel tools: generateImage (always), plus plot/play/stats when channel JSON loaded ──
+        const channelDataContext = hasChannelJson
+          ? `YouTube channel JSON loaded: ${sessionChannelJson.length} videos. Key fields only: videoId, videoUrl, title, releaseDate, viewCount, likeCount, commentCount, durationSeconds. Use these in tool calls.`
+          : 'No channel JSON loaded. You have the generateImage tool; use it when the user asks to create or generate an image (text prompt; optional anchor image).';
         const anchorFromUser = capturedImages[0]?.data?.includes(',')
           ? capturedImages[0].data.split(',')[1]
           : capturedImages[0]?.data;
@@ -504,11 +574,13 @@ ${sessionSummary}${slimCsvBlock}
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ prompt, anchorImageBase64: anchorImageBase64 || anchorFromUser || undefined }),
           });
-          const data = await res.json();
-          return data.imageBase64 ?? null;
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data?.error || res.statusText || 'Image generation failed');
+          const b64 = data?.imageBase64;
+          return b64 && typeof b64 === 'string' ? b64 : null;
         };
         const executeFn = async (toolName, args) =>
-          executeChannelTool(toolName, args, sessionChannelJson, generateImageFn);
+          executeChannelTool(toolName, args, sessionChannelJson || [], generateImageFn);
 
         const { text: answer, charts: returnedCharts, toolCalls: returnedCalls, generatedImages: imgs } =
           await chatWithChannelTools(
@@ -795,10 +867,17 @@ ${sessionSummary}${slimCsvBlock}
                 ) : null
               )}
 
-              {/* Generated images from channel tools */}
-              {m.generatedImages?.map((img, ii) => (
-                <GeneratedImage key={ii} dataUrl={img.dataUrl} />
-              ))}
+              {/* Generated images: from message state or from tool call results (fallback) */}
+              {(() => {
+                const fromState = m.generatedImages || [];
+                const fromToolCalls = (m.toolCalls || [])
+                  .filter((tc) => tc.result?._imageResult?.dataUrl)
+                  .map((tc) => tc.result._imageResult);
+                const imagesToShow = fromState.length ? fromState : fromToolCalls;
+                return imagesToShow.map((img, ii) =>
+                  img?.dataUrl ? <GeneratedImage key={ii} dataUrl={img.dataUrl} /> : null
+                );
+              })()}
 
               {/* Search sources */}
               {m.grounding?.groundingChunks?.length > 0 && (

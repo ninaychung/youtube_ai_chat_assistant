@@ -16,12 +16,20 @@ export default function GeneratedImage({ dataUrl }) {
   return (
     <>
       <div className="generated-image-wrap">
-        <img
-          src={dataUrl}
-          alt="Generated"
-          className="generated-image-thumb"
+        <span className="generated-image-label">Generated image</span>
+        <div
+          className="generated-image-thumb-wrap"
           onClick={() => setLightboxOpen(true)}
-        />
+          role="button"
+          tabIndex={0}
+          onKeyDown={(e) => e.key === 'Enter' && setLightboxOpen(true)}
+        >
+          <img
+            src={dataUrl}
+            alt="Generated"
+            className="generated-image-thumb"
+          />
+        </div>
         <div className="generated-image-actions">
           <button type="button" onClick={() => setLightboxOpen(true)}>
             Enlarge

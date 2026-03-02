@@ -289,9 +289,24 @@ export const chatWithChannelTools = async (
     if (toolResult?._chartType) charts.push(toolResult);
     if (toolResult?._imageResult) generatedImages.push(toolResult._imageResult);
 
+    // Send a small result back to the model to avoid huge payloads (chart data, base64 images)
+    let resultForModel = toolResult;
+    if (name === 'generateImage' && toolResult?._imageResult) {
+      resultForModel = { success: true, message: 'The image has been generated and is displayed to the user below.' };
+    } else if (toolResult?._chartType === 'metric_vs_time' && toolResult?.data) {
+      resultForModel = {
+        success: true,
+        message: `The ${toolResult.metricField || 'metric'} vs time chart is displayed to the user (${toolResult.data.length} data points).`,
+      };
+    } else if (toolResult?._chartType === 'play_video') {
+      resultForModel = { success: true, message: `Video "${toolResult.title}" is displayed; the user can click to open on YouTube.` };
+    } else if (toolResult?.error) {
+      resultForModel = { error: toolResult.error };
+    }
+
     response = (
       await chat.sendMessage([
-        { functionResponse: { name, response: { result: toolResult } } },
+        { functionResponse: { name, response: { result: resultForModel } } },
       ])
     ).response;
   }

@@ -149,37 +149,85 @@ app.post('/api/youtube/channel-data', async (req, res) => {
 
 // ── Image generation (for chat tool generateImage) ──────────────────────────
 const GEMINI_API_KEY = process.env.REACT_APP_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+
+function getImageBase64FromGenerateContent(data) {
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  for (const part of parts) {
+    const inline = part.inlineData || part.inline_data;
+    if (inline && (inline.data != null || inline.bytesBase64Encoded != null))
+      return inline.data != null ? inline.data : inline.bytesBase64Encoded;
+  }
+  return null;
+}
+
 app.post('/api/imagen/generate', async (req, res) => {
   try {
     const { prompt, anchorImageBase64 } = req.body;
     if (!prompt || typeof prompt !== 'string') {
       return res.status(400).json({ error: 'prompt required' });
     }
-    // Try Imagen via Google AI if available; otherwise return placeholder
-    if (GEMINI_API_KEY) {
-      try {
-        const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              instances: [{ prompt: prompt.slice(0, 1000) }],
-              parameters: { sampleCount: 1 },
-            }),
-          }
-        );
-        if (response.ok) {
-          const data = await response.json();
-          const b64 = data?.predictions?.[0]?.bytesBase64Encoded;
-          if (b64) return res.json({ imageBase64: b64 });
-        }
-      } catch (_) {}
+    const trimmedPrompt = prompt.slice(0, 2000).trim();
+    if (!GEMINI_API_KEY) {
+      return res.status(503).json({ error: 'Image generation is not configured. Set GEMINI_API_KEY (or REACT_APP_GEMINI_API_KEY) in the server environment.' });
     }
-    // Placeholder: minimal PNG (1x1 transparent) so UI can display something
+
+    // 1) Prefer Gemini 2.0 Flash native image generation (generateContent + responseModalities)
+    try {
+      const gcRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp-image-generation:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: trimmedPrompt }] }],
+            generationConfig: {
+              responseModalities: ['Text', 'Image'],
+            },
+          }),
+        }
+      );
+      const gcData = await gcRes.json().catch(() => ({}));
+      const b64FromGemini = getImageBase64FromGenerateContent(gcData);
+      if (b64FromGemini) return res.json({ imageBase64: b64FromGemini });
+
+      if (!gcRes.ok) {
+        console.warn('[imagen] Gemini image gen failed:', gcRes.status, gcData?.error?.message || JSON.stringify(gcData).slice(0, 200));
+      }
+    } catch (e) {
+      console.warn('[imagen] Gemini image gen error:', e.message);
+    }
+
+    // 2) Fallback: Imagen predict endpoint (same API key)
+    try {
+      const predRes = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${GEMINI_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instances: [{ prompt: trimmedPrompt }],
+            parameters: { sampleCount: 1 },
+          }),
+        }
+      );
+      const predData = await predRes.json().catch(() => ({}));
+      const b64FromPredict = predData?.predictions?.[0]?.bytesBase64Encoded;
+      if (b64FromPredict && predRes.ok) return res.json({ imageBase64: b64FromPredict });
+      if (!predRes.ok) {
+        console.warn('[imagen] Imagen predict failed:', predRes.status, predData?.error?.message || JSON.stringify(predData).slice(0, 200));
+      }
+    } catch (e) {
+      console.warn('[imagen] Imagen predict error:', e.message);
+    }
+
+    // 3) No image from any provider — return a clear placeholder and message
     const placeholder = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
-    return res.json({ imageBase64: placeholder });
+    return res.json({
+      imageBase64: placeholder,
+      warning: 'Image generation returned no image. Your API key may need image-generation access (e.g. Gemini 2.0 Flash image generation or Imagen). Check server logs for details.',
+    });
   } catch (err) {
+    console.error('[imagen]', err);
     res.status(500).json({ error: err.message || 'Image generation failed' });
   }
 });

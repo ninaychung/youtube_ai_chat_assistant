@@ -93,7 +93,10 @@ function pick(obj, camel, snake) {
   return v !== undefined && v !== null && v !== '' ? v : undefined;
 }
 
-/** Ensure each video has canonical camelCase fields and durationSeconds. Supports snake_case input. */
+/** Key metrics only — no transcript/description. Used for prompts and in-memory channel data. */
+const CHANNEL_KEY_FIELDS = ['videoId', 'videoUrl', 'title', 'releaseDate', 'viewCount', 'likeCount', 'commentCount', 'durationSeconds'];
+
+/** Ensure each video has canonical camelCase fields and durationSeconds. Keeps only key metrics (no transcript/description). */
 export function normalizeChannelData(videos) {
   if (!Array.isArray(videos)) return [];
   return videos.map((v) => {
@@ -104,17 +107,27 @@ export function normalizeChannelData(videos) {
     const commentCount = pick(v, 'commentCount', 'comment_count');
     const releaseDate = pick(v, 'releaseDate', 'release_date') ?? pick(v, 'publishedAt', 'published_at');
     const duration = v.duration ?? v.durationSeconds;
-    return {
-      ...v,
+    const out = {
       videoId,
       videoUrl: pick(v, 'videoUrl', 'video_url') || (videoId ? `https://www.youtube.com/watch?v=${videoId}` : undefined),
       title: title || (videoId ? `Video ${videoId}` : ''),
+      releaseDate: releaseDate || undefined,
       viewCount: viewCount != null ? Number(viewCount) : undefined,
       likeCount: likeCount != null ? Number(likeCount) : undefined,
       commentCount: commentCount != null ? Number(commentCount) : undefined,
-      releaseDate: releaseDate || undefined,
       durationSeconds: v.durationSeconds ?? parseDurationToSeconds(duration),
     };
+    return out;
+  });
+}
+
+/** Return a slim copy of videos for prompt context (key metrics only). */
+export function slimChannelForPrompt(videos, maxSamples = 2) {
+  if (!Array.isArray(videos)) return [];
+  return videos.slice(0, maxSamples).map((v) => {
+    const o = {};
+    CHANNEL_KEY_FIELDS.forEach((k) => { if (v[k] !== undefined && v[k] !== null) o[k] = v[k]; });
+    return o;
   });
 }
 
@@ -162,9 +175,11 @@ export async function executeChannelTool(toolName, args, channelData, generateIm
     }
 
     case 'plot_metric_vs_time': {
-      const metricField = args.metricField || 'viewCount';
+      const rawMetric = (args.metricField || 'viewCount').trim();
+      const metricAliases = { likes: 'likeCount', views: 'viewCount', comments: 'commentCount', duration: 'durationSeconds' };
+      const metricField = metricAliases[rawMetric.toLowerCase()] || rawMetric;
       if (!numericFields.includes(metricField)) {
-        return { error: `Unknown metric "${metricField}". Use one of: ${numericFields.join(', ')}.` };
+        return { error: `Unknown metric "${rawMetric}". Use one of: viewCount, likeCount, commentCount, durationSeconds (or "views", "likes", "comments").` };
       }
       const data = videos
         .map((v) => {
